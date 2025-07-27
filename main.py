@@ -1,199 +1,166 @@
-"""
-APK DOWNLOADER
-Author  :   Daniel Agyapong
-Website :   https://engineerdanny.me
-Date    :   February, 2022
-"""
+from kivy.app import App
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.label import Label
+from kivy.uix.image import Image
+from kivy.uix.button import Button
+from kivy.uix.popup import Popup
+from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.clock import Clock
+from kivy.uix.anchorlayout import AnchorLayout
 
-import sys
-import requests
-from bs4 import BeautifulSoup
-from colored import fg, bg, attr
-import re
-import progressbar
-import itertools
-import os
-
-
-base_url = 'https://apksfull.com'
-version_url = 'https://apksfull.com/version/'
-search_url = 'https://apksfull.com/search/'
-dl_url = 'https://apksfull.com/dl/'
-g_play_url = 'https://play.google.com/store/apps/details?id='
-
-headers = {
-    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 10_3_1 like Mac OS X) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.0 Mobile/14E304 Safari/602.1',
-    'Accept': 'application/json, text/javascript, */*; q=0.01',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-    'Connection': 'keep-alive',
+LANGUAGES = {
+    "en": {
+        "title": "playball",
+        "stream1": "Watch Stream 1 - PlayBall1",
+        "stream2": "Watch Stream 2 - PlayBall2",
+        "subscribe": "Subscribe now",
+        "settings": "Settings",
+        "language": "Language: English",
+        "monthly": "Monthly: $30",
+        "yearly": "Yearly: $100",
+        "free": "Free Trial: 24h",
+        "close": "Close"
+    },
+    "ar": {
+        "title": "بلاي بول",
+        "stream1": "مشاهدة البث 1 - PlayBall1",
+        "stream2": "مشاهدة البث 2 - PlayBall2",
+        "subscribe": "اشترك الآن",
+        "settings": "الإعدادات",
+        "language": "اللغة: العربية",
+        "monthly": "شهرياً: 30$",
+        "yearly": "سنوياً: 100$",
+        "free": "تجربة مجانية: 24 ساعة",
+        "close": "Close"
+    }
 }
 
+class MainScreen(Screen):
+    def __init__(self, **kwargs):
+        super(MainScreen, self).__init__(**kwargs)
+        self.current_language = "en"
+        self.labels = {}
+        self.free_trial_used = False
+        self.is_subscribed = False  # حالة الاشتراك، افتراضاً غير مشترك
 
-def show_internet_error():
-    print(fg('red') + '\n[!] ERROR: ' + attr('reset') +
-          'Check your internet connection and try again.\n')
-    exit()
+        main_layout = BoxLayout(orientation='vertical', spacing=10, padding=20)
 
+        # زر الإعدادات داخل AnchorLayout لوضعه يمين أو يسار في الأعلى
+        self.settings_button = Button(text='⚙️', size_hint=(None, None), size=(80, 80), font_size=32 * 3)
+        self.settings_button.bind(on_release=self.show_settings)
+        self.settings_anchor = AnchorLayout(anchor_y='top', size_hint=(1, None), height=80)
+        self.settings_anchor.add_widget(self.settings_button)
+        self.update_settings_position()
 
-def show_arg_error():
-    print(fg('red') + '\n[!] ERROR: ' + attr('reset') +
-          'Invalid Format\nShould be of the format `python main.py {{PACKAGE_ID}}`')
-    exit()
+        # محتوى الشاشة
+        self.content_layout = BoxLayout(orientation='vertical', spacing=10, padding=10)
+        self.content_layout.add_widget(Image(source='playball_logo.png', size_hint=(1, 0.4)))
 
+        self.labels['title'] = Label(font_size=42 * 3, bold=True, color=(1, 0, 0, 1))
+        self.content_layout.add_widget(self.labels['title'])
 
-def show_invalid_id_err():
-    print('%s PackageId is invalid %s' %
-          (fg('red'), attr('reset')))
-    exit()
+        self.labels['stream1'] = Button(font_size=22 * 3, background_color=(1, 0, 0, 1))
+        self.labels['stream2'] = Button(font_size=22 * 3, background_color=(1, 0, 0, 1))
 
+        # ربط ضغط البثوث ليظهر الاشتراك فقط إذا غير مشترك
+        self.labels['stream1'].bind(on_release=self.handle_stream_press)
+        self.labels['stream2'].bind(on_release=self.handle_stream_press)
 
-def make_spinner():
-    spinner = itertools.cycle(['-', '/', '|', '\\'])
-    while True:
-        sys.stdout.write(next(spinner))   # write the next character
-        sys.stdout.flush()                # flush stdout buffer (actual
-        sys.stdout.write('\b')            # erase the last written char
+        self.content_layout.add_widget(self.labels['stream1'])
+        self.content_layout.add_widget(self.labels['stream2'])
 
+        self.labels['subscribe'] = Button(font_size=22 * 3, background_color=(0.6, 0.0, 0.8, 1), color=(1, 1, 1, 1))
+        self.labels['subscribe'].bind(on_release=self.show_subscription_popup)
+        self.content_layout.add_widget(self.labels['subscribe'])
 
-def make_progress_bar():
-    return progressbar.ProgressBar(
-        redirect_stdout=True,
-        redirect_stderr=True,
-        widgets=[
-            progressbar.Percentage(),
-            progressbar.Bar(),
-            ' (',
-            progressbar.AdaptiveTransferSpeed(),
-            ' ',
-            progressbar.ETA(),
-            ') ',
-        ])
+        main_layout.add_widget(self.settings_anchor)
+        main_layout.add_widget(self.content_layout)
 
+        self.add_widget(main_layout)
+        self.update_texts()
 
-def main():
-    # Get the argument from the command line
-    if len(sys.argv) != 2:
-        show_arg_error()
+    def update_settings_position(self):
+        # تحكم يمين أو يسار حسب اللغة
+        self.settings_anchor.anchor_x = 'right' if self.current_language == "en" else 'left'
 
-    print('%sHello, Welcome to APK Downloader !!! %s' %
-          (fg('cornflower_blue'), attr('reset')))
+    def update_texts(self):
+        lang = LANGUAGES[self.current_language]
+        self.labels['title'].text = lang['title']
+        self.labels['stream1'].text = lang['stream1']
+        self.labels['stream2'].text = lang['stream2']
+        self.labels['subscribe'].text = lang['subscribe']
+        self.update_settings_position()
 
-    # take the package_id from the user
-    package_id = sys.argv[1]
+    def show_settings(self, instance):
+        lang = LANGUAGES[self.current_language]
+        content = BoxLayout(orientation='vertical', spacing=15, padding=10)
+        content.add_widget(Label(text=lang['settings'], font_size=24 * 3))
 
-    print('%sGetting download link... %s' %
-          (fg('light_yellow'), attr('reset')))
+        language_layout = BoxLayout(orientation='horizontal', spacing=10)
+        language_label = Label(text=lang['language'], font_size=18 * 3)
 
-    # verify g_play_url with packageId string
-    g_play_res = requests.get(g_play_url + package_id,
-                              headers=headers, allow_redirects=True)
-    if(g_play_res.status_code != 200):
-        show_invalid_id_err()
+        def toggle_language(instance):
+            self.current_language = "ar" if self.current_language == "en" else "en"
+            language_label.text = LANGUAGES[self.current_language]['language']
+            self.update_texts()
 
-    # search the web page using the package id
-    search_res = requests.get(search_url + package_id,
-                              headers=headers, allow_redirects=True)
+        left_button = Button(text='←', size_hint=(0.2, 1), font_size=20 * 3)
+        right_button = Button(text='→', size_hint=(0.2, 1), font_size=20 * 3)
+        left_button.bind(on_release=toggle_language)
+        right_button.bind(on_release=toggle_language)
 
-    # check the statuscode and verify it
-    if search_res.status_code != 200:
-        show_internet_error()
+        language_layout.add_widget(left_button)
+        language_layout.add_widget(language_label)
+        language_layout.add_widget(right_button)
 
-    # there will be a list of apps that show on the website
-    soup = BeautifulSoup(search_res.content, 'html.parser')
+        content.add_widget(language_layout)
 
-    # # find the first class with the class name "search-dl"
-    # children = soup.findChildren('a', class_='col col-6 list')
+        popup = Popup(title=lang['settings'], content=content, size_hint=(0.9, 0.5))
+        popup.open()
 
-    # # get href of the first child
-    # first_child = children[0]
-    # app_href = first_child.get('href')
+    def show_subscription_popup(self, instance):
+        lang = LANGUAGES[self.current_language]
+        content = BoxLayout(orientation='vertical', spacing=15, padding=20)
 
-    # # get the name of the child
-    # app_name = first_child.find('strong').text
+        monthly_label = Label(text=lang['monthly'], font_size=20 * 3)
+        yearly_label = Label(text=lang['yearly'], font_size=20 * 3)
 
-    # # hyphenate and format the app name into lowercase
-    # app_name_formatted = app_name.replace(" ", "-").lower()
-    # app_url = version_url + app_href
+        content.add_widget(monthly_label)
+        content.add_widget(yearly_label)
 
-    # # get string after the last '/'
-    # app_id = app_href.rsplit('/', 1)[1]
+        if not self.free_trial_used:
+            free_button = Button(text=lang['free'], font_size=20 * 3, background_color=(0.8, 1, 0.8, 1))
+            content.add_widget(free_button)
+            free_button.bind(on_release=self.start_free_trial)
 
-    # app_response = requests.get(version_url + app_id,
-    #                             headers=headers, allow_redirects=True)
+        close_button = Button(text=lang['close'], font_size=18 * 3, size_hint=(1, 0.3))
+        content.add_widget(close_button)
 
-    # if app_response.status_code != 200:
-    #     show_internet_error()
+        self.subscription_popup = Popup(title=lang['subscribe'], content=content, size_hint=(0.8, 0.5))
+        close_button.bind(on_release=self.subscription_popup.dismiss)
+        self.subscription_popup.open()
 
-    tbody_children = soup.findAll('a')
+    def start_free_trial(self, instance):
+        self.free_trial_used = True
+        Clock.schedule_once(self.end_free_trial, 86400)  # 24 ساعة
+        if self.subscription_popup:
+            self.subscription_popup.dismiss()
 
-    # get app name
-    app_name = 'app_name'
-    app_name_element = soup.find('h1', {'itemprop': 'name'})
-    if app_name_element:
-        app_name = app_name_element.text.replace(" ", "") # strip() doesn't work here
-        print("Found app name, APK would be named: " + app_name)
-    else:
-        print("App name element not found. Defaulting to app_name.apk")
+    def end_free_trial(self, dt):
+        self.free_trial_used = True
 
-    sub_dl_links = []
+    def handle_stream_press(self, instance):
+        if not self.is_subscribed:
+            self.show_subscription_popup(instance)
+        else:
+            # هنا ممكن تضيف فتح البث الحقيقي لو حبيت
+            pass
 
-    # tbody_children
-    # loop through the children and get the href
-    for item in tbody_children:
-        # get href of the child
-        link = item.get('href')
-        # if link contains "downwload"
-        if link.find("/download/") != -1:
-            # append the link to the list
-            sub_dl_links.append(base_url+link)
+class PlayBallApp(App):
+    def build(self):
+        sm = ScreenManager()
+        sm.add_widget(MainScreen(name='main'))
+        return sm
 
-    # establish a connection to the first link
-    sub_dl_res = requests.get(sub_dl_links[0],
-                              headers=headers, allow_redirects=True)
-    if sub_dl_res.status_code != 200:
-        show_internet_error()
-
-    # locate the script, get the contents
-    script_text = BeautifulSoup(
-        sub_dl_res.content, 'html.parser').findAll("script")
-
-    # find the last but one script tag
-    last_script = script_text[-2].contents[0]
-
-    # query the token from the script
-    token = re.findall("token','([^\']+)", last_script)[0]
-
-    # make a request to the download link
-    dl_res = requests.post(dl_url, data={'token': token}, headers=headers)
-    if dl_res.status_code != 200:
-        show_internet_error()
-    dl_res_json = dl_res.json()
-    # get the download_link from the json response
-    download_link = dl_res_json['download_link']
-
-    # download the apk
-    print('Started downloading APK')
-    output_file = "output/" + app_name + ".apk"
-
-    if not os.path.exists('output'):
-        print('Directory output/ is missing, creating it now.')
-        os.mkdir('output')
-
-    r = requests.get(download_link, allow_redirects=True, stream=True)
-    with open(output_file, 'wb') as f:
-        total_length = int(r.headers.get('content-length'))
-        bar = make_progress_bar()
-        bar.start(total_length)
-        dl = 0
-        for chunk in r.iter_content(chunk_size=1024):
-            if chunk:
-                dl += len(chunk)
-                f.write(chunk)
-                bar.update(dl)
-        bar.finish()
-
-    print('APK Downloaded: App saved to ' + output_file)
-    exit()
-
-main()
+if __name__ == '__main__':
+    PlayBallApp().run()
